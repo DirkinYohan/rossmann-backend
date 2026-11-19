@@ -215,11 +215,13 @@ Input (30 pasos × 10 features)
  → Dropout(0.2)                      identidad en inferencia
  → GRU(32)                           nombre "gru_2"
  → Dense(16, relu)                   nombre "dense_1"
- → Dense(1)                          venta escalada del día siguiente
+ → Dense(1)                          venta NEUTRALIZADA (escalada) del día siguiente
+      × (1 + β·promo del día)        efecto multiplicativo de la promo → venta predicha
 ```
 
 - **Features por paso** (orden exacto): `ventas_esc, promo, school_holiday, festivo_a, festivo_b, festivo_c, dow_sin, dow_cos, mes_sin, mes_cos`.
-  - `ventas_esc` usa un `MinMaxScaler` ajustado **solo con train**.
+  - `ventas_esc` es la venta **neutralizada**, `venta / (1 + β·promo)`, escalada con un `MinMaxScaler` ajustado **solo con train**.
+  - La columna `promo` entra en 0 a la red: la promo actúa por el factor multiplicativo (ver abajo).
   - `StateHoliday` va en one-hot.
   - El día de la semana y el mes van en seno/coseno.
   - En cada paso, las exógenas son las del **día siguiente** (d + 1), que se conocen de antemano. Así los escenarios influyen directamente en la predicción.
@@ -228,6 +230,22 @@ Input (30 pasos × 10 features)
   - Ojo: dentro del `.h5`, Keras 3 nombra las capas por clase y orden (`layers/gru`, `layers/gru_1`, `layers/dense`, `layers/dense_1`), no con el nombre del config.
   - El bias del GRU tiene forma (2, 3u): bias de entrada y bias recurrente, porque usa `reset_after=True`. Las gates van en orden z, r, h.
 - **Modelo final:** tras evaluar, se reentrena con la serie completa (tantas épocas como la mejor época de la evaluación) y ese es el `.keras` que se exporta.
+
+### Por qué la promo es un efecto multiplicativo (modelo híbrido GRU × promo)
+
+En el histórico de Rossmann la promo casi siempre **alterna una semana sí y otra no**. Cuando la red aprendía sola el efecto de la promo, los escenarios con promo continua (que nunca vio) daban resultados absurdos en el pronóstico recursivo. En el total de la cadena, el efecto se desvanecía (+27 % → +2 %), se invertía (−13 % desde la semana 3) o se acumulaba hasta +124 %, según el reentrenamiento. En los datos, una semana con promo vende ~+34 %.
+
+Se probaron dos alternativas que no bastaron:
+- **Aumento de datos** de la promo pasada: corregía la inversión, pero el efecto se acumulaba.
+- **Neutralizar solo la historia:** el modelo final volvía a invertirse.
+
+La solución adoptada separa los dos componentes:
+
+1. **β** es el efecto medio de la promo en un día laborable abierto (sin diciembre), medido en los datos de entrenamiento (`estimar_beta`). Por ejemplo, ≈ 0,41 en el total de la cadena.
+2. **La red aprende la venta neutralizada** `venta / (1 + β·promo)`, con historia y objetivo neutralizados y la columna promo en 0. Modela tendencia, patrón semanal, mes, vacaciones y festivos.
+3. **Venta predicha** = `venta_neutra · (1 + β·promo del día)`.
+
+Con esto, una promo de lunes a viernes da un efecto **estable de ~+35 % por semana** en el total, igual que en los datos, en lugar de derivar con el horizonte. `entrenar_gru.py` calcula este diagnóstico (`efecto_promo_continua_por_semana`) para cada modelo y lo guarda en `gru_resultados.json`. β se exporta como `ajuste_promo_beta` en `gru_meta_<serie>.json`, y el frontend aplica la misma multiplicación.
 - `exportar_gru.py` escribe:
   - `gru_meta_<serie>.json`: el escalador, las features, la ventana, las capas, `ultima_fecha`, `ventana_gru` (los últimos 30 días), `info_tienda` y `mape_test`;
   - `gru_referencia_<serie>.json`: 5 ventanas reales del test con la salida de Keras. El navegador las ejecuta al cargar el modelo y exige una diferencia < 1e-4.
@@ -241,24 +259,24 @@ _Generado automáticamente por `comparar_modelos.py`. Test: 2015-06-20 → 2015-
 
 | Serie | RMSE ARIMA | RMSE GRU | MAE ARIMA | MAE GRU | MAPE ARIMA | MAPE GRU | Mejor |
 |---|---:|---:|---:|---:|---:|---:|:---:|
-| Total cadena | 744.197 | **660.473** | 542.851 | **443.919** | **8,83 %** | 15,25 % | GRU |
-| Tienda 770 (tipo a) | 1.832 | **1.527** | 1.706 | **1.418** | 39,32 % | **32,29 %** | GRU |
-| Tienda 1097 (tipo b) | **672** | 1.499 | **450** | 1.330 | **4,00 %** | 12,12 % | ARIMA |
-| Tienda 1044 (tipo c) | 1.045 | **1.036** | 792 | **750** | 13,44 % | **12,33 %** | GRU |
-| Tienda 352 (tipo d) | **732** | 760 | **626** | 653 | **9,32 %** | 9,57 % | ARIMA |
-| Tienda 262 (tipo b, mayor volumen) | **1.342** | 1.858 | **1.034** | 1.580 | **4,70 %** | 7,64 % | ARIMA |
+| Total cadena | 744.197 | **576.740** | 542.851 | **375.871** | **8,83 %** | 11,93 % | GRU |
+| Tienda 770 (tipo a) | 1.832 | **1.818** | **1.706** | 1.712 | **39,32 %** | 39,82 % | ARIMA |
+| Tienda 1097 (tipo b) | **672** | 1.473 | **450** | 1.323 | **4,00 %** | 12,19 % | ARIMA |
+| Tienda 1044 (tipo c) | **1.045** | 1.164 | **792** | 895 | **13,44 %** | 15,32 % | ARIMA |
+| Tienda 352 (tipo d) | 732 | **631** | 626 | **451** | 9,32 % | **6,34 %** | GRU |
+| Tienda 262 (tipo b, mayor volumen) | **1.342** | 1.701 | **1.034** | 1.418 | **4,70 %** | 6,89 % | ARIMA |
 
-MAPE promedio: ARIMA 13,27 % · GRU 14,87 % · Victorias por métrica: ARIMA 10, GRU 8 · **Mejor modelo general: ARIMA**
+MAPE promedio: ARIMA 13,27 % · GRU 15,41 % · Victorias por métrica: ARIMA 12, GRU 6 · **Mejor modelo general: ARIMA**
 
 ### Órdenes SARIMAX elegidos y evidencia
 
 | Serie | Orden (p,d,q)(P,D,Q,7) | AIC | ADF p (orig.) | KPSS p (orig.) | ACF(7) | Coef. Promo | GRU épocas |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Total cadena | (3,0,3)(1,1,1,7) | 26.827 | 0.0001 | 0.1 | 0.5466 | 2.442.621 | 50 |
-| Tienda 770 (tipo a) | (1,0,1)(1,1,1,7) | 14.788 | 0.004 | 0.031 | 0.0773 | 2.449 | 18 |
-| Tienda 1097 (tipo b) | (1,0,1)(1,1,1,7) | 14.390 | 0.0046 | 0.01 | 0.5255 | 1.207 | 28 |
-| Tienda 1044 (tipo c) | (1,0,0)(1,1,0,7) | 14.921 | 0.0 | 0.1 | -0.1624 | 2.401 | 33 |
-| Tienda 352 (tipo d) | (1,0,0)(1,1,0,7) | 14.629 | 0.0 | 0.1 | 0.0181 | 1.189 | 37 |
+| Total cadena | (3,0,3)(1,1,1,7) | 26.827 | 0.0001 | 0.1 | 0.5466 | 2.442.621 | 74 |
+| Tienda 770 (tipo a) | (1,0,1)(1,1,1,7) | 14.788 | 0.004 | 0.031 | 0.0773 | 2.449 | 36 |
+| Tienda 1097 (tipo b) | (1,0,1)(1,1,1,7) | 14.390 | 0.0046 | 0.01 | 0.5255 | 1.207 | 53 |
+| Tienda 1044 (tipo c) | (1,0,0)(1,1,0,7) | 14.921 | 0.0 | 0.1 | -0.1624 | 2.401 | 44 |
+| Tienda 352 (tipo d) | (1,0,0)(1,1,0,7) | 14.629 | 0.0 | 0.1 | 0.0181 | 1.189 | 74 |
 | Tienda 262 (tipo b, mayor volumen) | (1,0,1)(0,1,1,7) | 15.947 | 0.0 | 0.1 | 0.5246 | 2.966 | 56 |
 <!-- RESULTADOS:FIN -->
 

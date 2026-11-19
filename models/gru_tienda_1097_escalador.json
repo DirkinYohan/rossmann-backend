@@ -15,5 +15,6 @@
   ],
   "escalador_min": 5460.0,
   "escalador_max": 17039.0,
+  "ajuste_promo_beta": 0.12580009481986676,
   "entrenado_hasta": "2015-07-31"
 }

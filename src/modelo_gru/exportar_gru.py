@@ -41,7 +41,7 @@ import tensorflow as tf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "limpieza"))
 from info_tienda import info_tienda  # noqa: E402  (código compartido: ficha informativa)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from entrenar_gru import FEATURES, HORIZONTE_TEST, VENTANA, cargar_serie, exogenas, ventana  # noqa: E402
+from entrenar_gru import FEATURES, HORIZONTE_TEST, VENTANA, cargar_serie, exogenas, ventana, ventas_neutras  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[2]
 DIR_MODELS = RAIZ / "models"
@@ -78,7 +78,10 @@ def exportar_serie(id_serie: str, resultado: dict, catalogo: dict) -> tuple[dict
     if esc.get("entrenado_hasta") != df["fecha"].iloc[-1].strftime("%Y-%m-%d"):
         raise RuntimeError(f"{ruta.name} no es el modelo reentrenado con la serie completa: "
                            "ejecuta entrenar_gru.py (o entrenar_gru.py --solo-final)")
-    ventas_esc = ((df["ventas"].to_numpy() - mn) / (mx - mn)).astype(np.float32)
+    # Entrada del GRU = venta NEUTRALIZADA (venta / (1 + β·promo)) escalada con el mismo MinMax.
+    beta = float(esc.get("ajuste_promo_beta", 0.0))
+    neutras = ventas_neutras(df, beta)
+    ventas_esc = ((neutras - mn) / (mx - mn)).astype(np.float32)
     exog = exogenas(df)
     n_train = len(df) - HORIZONTE_TEST
 
@@ -99,8 +102,14 @@ def exportar_serie(id_serie: str, resultado: dict, catalogo: dict) -> tuple[dict
         "ventana": VENTANA,
         "features": FEATURES,
         "escalador_min": mn, "escalador_max": mx,
+        # Modelo híbrido: el GRU trabaja con la venta neutralizada
+        #   ventas_esc = (venta / (1 + β·promo) − min) / (max − min)
+        # y su salida también es neutralizada: venta = salida_desescalada · (1 + β·promo del día).
+        "ajuste_promo_beta": beta,
         "capas": describir_keras(ruta),
-        "nota_features": ("Paso k (0..29) para predecir el día t: [ventas_esc(t-30+k), exógenas(t-29+k)]. "
+        "nota_features": ("Paso k (0..29) para predecir el día t: [ventas_esc(t-30+k), exógenas(t-29+k)], con "
+                          "ventas_esc = venta neutralizada (venta / (1 + ajuste_promo_beta·promo)) escalada; la salida también es neutralizada "
+                          "y la venta final = salida · (1 + ajuste_promo_beta·promo). "
                           "Exógenas: promo, school_holiday, festivo_a, festivo_b, festivo_c, "
                           "sin/cos(2π·dow/7) con dow 0=lunes, sin/cos(2π·(mes-1)/12)."),
         "ultima_fecha": ultimos["fecha"].iloc[-1].strftime("%Y-%m-%d"),
@@ -112,14 +121,14 @@ def exportar_serie(id_serie: str, resultado: dict, catalogo: dict) -> tuple[dict
         # `ventas` en días cerrados (abierto = 0) es el valor interpolado que vio el modelo.
         "ventana_gru": [
             {"fecha": r.fecha.strftime("%Y-%m-%d"), "ventas": round(float(r.ventas), 4),
-             "ventas_esc": float((r.ventas - mn) / (mx - mn)), "abierto": int(r.abierto),
+             "ventas_esc": float((r.ventas / (1 + beta * r.promo) - mn) / (mx - mn)), "abierto": int(r.abierto),
              "promo": float(r.promo), "school_holiday": float(r.school_holiday),
              "festivo_a": float(r.festivo_a), "festivo_b": float(r.festivo_b), "festivo_c": float(r.festivo_c),
              "state_holiday": str(r.state_holiday)}
             for r in ultimos.itertuples()
         ],
     }
-    ref = {"serie": id_serie, "tolerancia": 1e-4, "espacio": "ventas escaladas (salida directa del modelo)",
+    ref = {"serie": id_serie, "tolerancia": 1e-4, "espacio": "ventas neutralizadas escaladas (salida directa del modelo)",
            "casos": referencia}
     return meta, ref
 
