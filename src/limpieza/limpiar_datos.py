@@ -5,6 +5,7 @@ Entrada : data/raw/train.csv y data/raw/store.csv
 Salida  : data/processed/serie_<id>.csv  (una serie diaria por archivo)
           data/processed/series.json      (catálogo de series elegidas)
           data/processed/reporte_limpieza.json
+          exports/historicos.json         (datos de apoyo para el frontend: serie diaria completa)
 
 Cada paso indica entre corchetes la DIMENSIÓN DE CALIDAD que resuelve:
   [Integración] [Consistencia] [Unicidad] [Validez] [Completitud] [Exactitud] [Oportunidad/Temporalidad]
@@ -28,6 +29,7 @@ import pandas as pd
 RAIZ = Path(__file__).resolve().parents[2]
 DIR_RAW = RAIZ / "data" / "raw"
 DIR_PROCESSED = RAIZ / "data" / "processed"
+DIR_EXPORTS = RAIZ / "exports"
 
 # Columnas exógenas que se agregan por serie
 CATEGORIAS_FESTIVO = ["a", "b", "c"]  # a = festivo público, b = Pascua, c = Navidad
@@ -273,12 +275,14 @@ def main() -> dict:
 
     tiendas = elegir_tiendas(df_abiertos, df_completo)
     catalogo = [{
-        "id": "total", "store": None, "store_type": None,
+        "id": "total_cadena", "store": None, "store_type": None,
         "criterio": "Suma diaria de ventas de todas las tiendas abiertas", "nombre": "Total cadena",
     }] + tiendas
 
     DIR_PROCESSED.mkdir(parents=True, exist_ok=True)
+    DIR_EXPORTS.mkdir(parents=True, exist_ok=True)
     reporte["series"] = []
+    historicos: dict = {}
     for s in catalogo:
         serie = construir_serie(df_abiertos, df_completo, s["store"])
         ruta = DIR_PROCESSED / f"serie_{s['id']}.csv"
@@ -287,9 +291,17 @@ def main() -> dict:
         s["dias"] = int(len(serie))
         s["dias_interpolados"] = n_interp
         reporte["series"].append({"id": s["id"], "archivo": ruta.name, "dias": len(serie), "interpolados": n_interp})
+        # Datos de apoyo para el frontend: venta diaria y si el dato es real (1) o interpolado (0).
+        historicos[s["id"]] = {
+            "fechas": serie["fecha"].dt.strftime("%Y-%m-%d").tolist(),
+            "ventas": serie["ventas"].round(2).tolist(),
+            "abierto": serie["abierto"].astype(int).tolist(),
+        }
 
     (DIR_PROCESSED / "series.json").write_text(json.dumps(catalogo, ensure_ascii=False, indent=2), encoding="utf-8")
     (DIR_PROCESSED / "reporte_limpieza.json").write_text(json.dumps(reporte, ensure_ascii=False, indent=2), encoding="utf-8")
+    (DIR_EXPORTS / "series.json").write_text(json.dumps(catalogo, ensure_ascii=False, indent=2), encoding="utf-8")
+    (DIR_EXPORTS / "historicos.json").write_text(json.dumps({"series": historicos}, ensure_ascii=False), encoding="utf-8")
 
     # ---------------- Reporte en consola ----------------
     print(f"Filas train original ........... {reporte['filas_train_original']:,}")

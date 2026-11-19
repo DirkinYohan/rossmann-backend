@@ -36,8 +36,8 @@
   "fecha_max": "2015-07-31",
   "series": [
     {
-      "id": "total",
-      "archivo": "serie_total.csv",
+      "id": "total_cadena",
+      "archivo": "serie_total_cadena.csv",
       "dias": 942,
       "interpolados": 0
     },

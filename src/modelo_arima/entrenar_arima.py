@@ -7,9 +7,10 @@ Por cada serie (Total cadena + 5 tiendas):
   3. Selecciona (p,d,q)(P,D,Q,7) con pmdarima.auto_arima minimizando el AIC.
   4. Ajusta un SARIMAX de statsmodels con esos órdenes y las exógenas
      Promo, SchoolHoliday y StateHoliday codificado (festivo 0/1).
-  5. Pronostica el test, calcula RMSE/MAE/MAPE y guarda models/arima_<serie>.pkl.
+  5. Pronostica el test (con IC 95 %) y calcula RMSE/MAE/MAPE.
+  6. Guarda el modelo ajustado COMPACTO en models/arima_<serie>.joblib (ver `compactar`).
 
-Salida: exports/arima_resultados.json
+Salida: models/arima_<serie>.joblib · exports/arima_resultados.json
 
 Ejecución independiente:
     python src/modelo_arima/entrenar_arima.py
@@ -21,9 +22,10 @@ import sys
 import time
 import warnings
 from pathlib import Path
-import sys as _sys
-_sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # consola de Windows (cp1252) con tildes y símbolos
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # consola de Windows (cp1252) con tildes y símbolos
+
+import joblib
 import numpy as np
 import pandas as pd
 import pmdarima as pm
@@ -41,9 +43,11 @@ DIR_EXPORTS = RAIZ / "exports"
 
 HORIZONTE_TEST = 42          # 6 semanas: horizonte oficial de la competencia
 PERIODO_ESTACIONAL = 7       # estacionalidad semanal
+DIAS_ANCLA = 28              # observaciones que conserva el modelo compacto (ver `compactar`)
 # StateHoliday se codifica como un indicador 0/1 ("hay festivo"): las categorías b (Pascua) y
 # c (Navidad) aparecen muy pocas veces y por separado harían la matriz exógena casi singular.
 EXOGENAS = ["promo", "school_holiday", "festivo"]
+OPCIONES_SARIMAX = dict(enforce_stationarity=False, enforce_invertibility=False)
 
 
 def cargar_serie(id_serie: str) -> pd.DataFrame:
@@ -56,14 +60,14 @@ def dividir(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return df.iloc[:-HORIZONTE_TEST], df.iloc[-HORIZONTE_TEST:]
 
 
-def seleccionar_orden(y: pd.Series, X: pd.DataFrame) -> pm.arima.ARIMA:
+def seleccionar_orden(y: np.ndarray, X: np.ndarray) -> pm.arima.ARIMA:
     """
     Búsqueda stepwise por AIC con límites razonables:
       - p, q ≤ 3 y P, Q ≤ 1: la PACF corta en los primeros rezagos y la ACF muestra picos
         en 7, 14, 21… que se capturan con un término estacional de orden 1.
       - d ≤ 1 elegido con KPSS (ADF/KPSS sugieren a lo sumo una diferencia regular).
       - D = 1 FIJO: la ACF tiene picos persistentes en 7, 14, 21… y la diferencia de lag 7
-        vuelve estacionaria la serie (ver estacionalidad.json). La prueba OCSB de pmdarima
+        vuelve estacionaria la serie (ver estacionalidad_informe.json). La prueba OCSB de pmdarima
         tiende a elegir D = 0 y entonces el modelo no reproduce la caída de los domingos.
     """
     return pm.auto_arima(
@@ -77,46 +81,70 @@ def seleccionar_orden(y: pd.Series, X: pd.DataFrame) -> pm.arima.ARIMA:
     )
 
 
-def ajustar_sarimax(y: pd.Series, X: pd.DataFrame, orden: tuple, orden_est: tuple):
-    modelo = SARIMAX(
-        y, exog=X, order=orden, seasonal_order=orden_est,
-        enforce_stationarity=False, enforce_invertibility=False,
-    )
-    return modelo.fit(disp=False, maxiter=200)
+def compactar(res, y: np.ndarray, X: np.ndarray):
+    """
+    Crea una versión LIGERA del modelo ajustado que pronostica EXACTAMENTE igual.
+
+    `remove_data=True` no sirve aquí: statsmodels borra `model.endog` y luego `get_forecast`
+    falla porque lo necesita para calcular el índice de la predicción. En su lugar se
+    "reancla" el modelo: se construye un SARIMAX con los mismos órdenes solo sobre los
+    últimos 28 días y se inicializa su filtro de Kalman con el estado (media y covarianza)
+    que el modelo completo tenía en ese punto. Al filtrar esos 28 días con los mismos
+    parámetros, el estado final es idéntico al del modelo completo → mismos pronósticos e
+    intervalos, pero el archivo pasa de ~45 MB a unos cientos de KB.
+
+    Se usan arrays de NumPy (sin índice de pandas) para que el .joblib dependa lo menos
+    posible de la versión de pandas al cargarlo en Pyodide.
+    """
+    T, K = res.nobs, DIAS_ANCLA
+    modelo = SARIMAX(y[-K:], exog=X[-K:], order=res.model.order,
+                     seasonal_order=res.model.seasonal_order, **OPCIONES_SARIMAX)
+    modelo.ssm.initialize_known(res.predicted_state[:, T - K], res.predicted_state_cov[:, :, T - K])
+    return modelo.filter(res.params)
 
 
 def entrenar_serie(s: dict) -> dict:
     df = cargar_serie(s["id"])
     train, test = dividir(df)
-    y_tr, X_tr = train["ventas"], train[EXOGENAS]
-    X_te = test[EXOGENAS]
+    y_tr, X_tr = train["ventas"].to_numpy(float), train[EXOGENAS].to_numpy(float)
+    X_te = test[EXOGENAS].to_numpy(float)
 
     t0 = time.time()
     auto = seleccionar_orden(y_tr, X_tr)
     orden, orden_est = auto.order, auto.seasonal_order
-    res = ajustar_sarimax(y_tr, X_tr, orden, orden_est)
+    res = SARIMAX(y_tr, exog=X_tr, order=orden, seasonal_order=orden_est, **OPCIONES_SARIMAX).fit(disp=False, maxiter=200)
 
-    pron = res.get_forecast(steps=HORIZONTE_TEST, exog=X_te).summary_frame(alpha=0.05)
-    # Las ventas no pueden ser negativas: se recortan predicción y límite inferior en 0.
-    pred = pron["mean"].clip(lower=0)
-    li, ls = pron["mean_ci_lower"].clip(lower=0), pron["mean_ci_upper"]
+    pron = res.get_forecast(steps=HORIZONTE_TEST, exog=X_te)
+    media = np.asarray(pron.predicted_mean)
+    ic = np.asarray(pron.conf_int(alpha=0.05))
 
-    # Se evalúa SOLO en días con venta real (los interpolados no son observaciones).
-    mascara = test["abierto"].values == 1
-    metricas = calcular_metricas(test["ventas"].values[mascara], pred.values[mascara])
-
+    # Modelo compacto: se comprueba que pronostique exactamente lo mismo antes de guardarlo.
+    comp = compactar(res, y_tr, X_tr)
+    pron_c = comp.get_forecast(steps=HORIZONTE_TEST, exog=X_te)
+    dif = max(np.abs(np.asarray(pron_c.predicted_mean) - media).max(), np.abs(np.asarray(pron_c.conf_int(alpha=0.05)) - ic).max())
+    if dif > 1e-6 * max(1.0, np.abs(media).max()):
+        raise RuntimeError(f"El modelo compacto de {s['id']} difiere del completo en {dif}")
     DIR_MODELS.mkdir(parents=True, exist_ok=True)
-    res.save(str(DIR_MODELS / f"arima_{s['id']}.pkl"))
+    ruta = DIR_MODELS / f"arima_{s['id']}.joblib"
+    joblib.dump(comp, ruta, compress=3)
 
-    coef = {k: round(float(v), 4) for k, v in res.params.items() if k in EXOGENAS}
-    duracion = time.time() - t0
+    # Las ventas no pueden ser negativas: se recortan predicción y límite inferior en 0.
+    pred, li, ls = np.clip(media, 0, None), np.clip(ic[:, 0], 0, None), ic[:, 1]
+    # Se evalúa SOLO en días con venta real (los interpolados no son observaciones).
+    mascara = test["abierto"].to_numpy() == 1
+    metricas = calcular_metricas(test["ventas"].to_numpy()[mascara], pred[mascara])
+
+    nombres_param = res.model.param_names
+    coef = {n: round(float(v), 4) for n, v in zip(nombres_param, res.params)}
+    coef_exog = {EXOGENAS[i]: coef[f"x{i + 1}"] for i in range(len(EXOGENAS))}
     print(f"▶ {s['nombre']:<38} SARIMAX{orden}x{orden_est}  AIC={res.aic:,.1f}  "
-          f"RMSE={metricas['RMSE']:,.0f}  MAE={metricas['MAE']:,.0f}  MAPE={metricas['MAPE']:.2f}%  ({duracion:.0f}s)")
+          f"RMSE={metricas['RMSE']:,.0f}  MAE={metricas['MAE']:,.0f}  MAPE={metricas['MAPE']:.2f}%  "
+          f"· {ruta.name} {ruta.stat().st_size / 1e3:.0f} KB  ({time.time() - t0:.0f}s)")
     return {
         "nombre": s["nombre"],
         "orden": list(orden), "orden_estacional": list(orden_est),
-        "aic": round(float(res.aic), 2), "aic_auto_arima": round(float(auto.aic()), 2),
-        "coeficientes_exogenas": coef,
+        "aic": round(float(res.aic), 2),
+        "coeficientes_exogenas": coef_exog,
         "exogenas": EXOGENAS,
         "train_inicio": train.index[0].strftime("%Y-%m-%d"), "train_fin": train.index[-1].strftime("%Y-%m-%d"),
         "test_inicio": test.index[0].strftime("%Y-%m-%d"), "test_fin": test.index[-1].strftime("%Y-%m-%d"),

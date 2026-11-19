@@ -2,7 +2,7 @@
  "modelo": "ARIMA",
  "horizonte_test": 42,
  "series": {
-  "total": {
+  "total_cadena": {
    "nombre": "Total cadena",
    "orden": [
     3,
@@ -16,7 +16,6 @@
     7
    ],
    "aic": 26827.48,
-   "aic_auto_arima": 26951.64,
    "coeficientes_exogenas": {
     "promo": 2442621.3166,
     "school_holiday": 736018.9,
@@ -389,7 +388,6 @@
     7
    ],
    "aic": 14788.27,
-   "aic_auto_arima": 14949.49,
    "coeficientes_exogenas": {
     "promo": 2448.9786,
     "school_holiday": 145.8091,
@@ -762,7 +760,6 @@
     7
    ],
    "aic": 14389.51,
-   "aic_auto_arima": 14577.78,
    "coeficientes_exogenas": {
     "promo": 1207.4788,
     "school_holiday": -810.9864,
@@ -1135,7 +1132,6 @@
     7
    ],
    "aic": 14920.79,
-   "aic_auto_arima": 15025.55,
    "coeficientes_exogenas": {
     "promo": 2401.0606,
     "school_holiday": 431.0455,
@@ -1508,7 +1504,6 @@
     7
    ],
    "aic": 14629.33,
-   "aic_auto_arima": 14766.15,
    "coeficientes_exogenas": {
     "promo": 1189.3177,
     "school_holiday": 113.0428,
@@ -1881,7 +1876,6 @@
     7
    ],
    "aic": 15947.14,
-   "aic_auto_arima": 16130.31,
    "coeficientes_exogenas": {
     "promo": 2966.4333,
     "school_holiday": 614.8943,

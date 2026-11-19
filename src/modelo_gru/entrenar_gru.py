@@ -21,7 +21,8 @@ Diseño
 - EarlyStopping(val_loss, paciencia 10) con validación = 10 % final de las ventanas de train
   (orden temporal, sin mezclar). Semillas fijas.
 
-Salida: models/gru_<serie>.keras, models/gru_<serie>_meta.json, exports/gru_resultados.json
+Salida: models/gru_<serie>.keras (formato Keras 3), models/gru_<serie>_escalador.json,
+        exports/gru_resultados.json
 
 Ejecución independiente:
     python src/modelo_gru/entrenar_gru.py
@@ -101,10 +102,12 @@ def ventana(ventas_esc: np.ndarray, exog: np.ndarray, t: int) -> np.ndarray:
 
 def construir_modelo(n_features: int) -> tf.keras.Model:
     entrada = tf.keras.Input(shape=(VENTANA, n_features), name="input")
-    x = tf.keras.layers.GRU(64, return_sequences=True)(entrada)
-    x = tf.keras.layers.Dropout(0.2)(x)
-    x = tf.keras.layers.GRU(32)(x)
-    x = tf.keras.layers.Dense(16, activation="relu")(x)
+    # Nombres explícitos: el frontend lee los pesos de model.weights.h5 por capa.
+    # GRU usa la convención de Keras 3: reset_after=True, gates z, r, h, sigmoide/tanh.
+    x = tf.keras.layers.GRU(64, return_sequences=True, name="gru_1")(entrada)
+    x = tf.keras.layers.Dropout(0.2, name="dropout")(x)
+    x = tf.keras.layers.GRU(32, name="gru_2")(x)
+    x = tf.keras.layers.Dense(16, activation="relu", name="dense_1")(x)
     salida = tf.keras.layers.Dense(1, name="output")(x)
     modelo = tf.keras.Model(entrada, salida, name="gru_rossmann")
     modelo.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"])
@@ -163,7 +166,7 @@ def entrenar_serie(s: dict) -> dict:
         "id": s["id"], "ventana": VENTANA, "features": FEATURES,
         "escalador_min": float(escalador.data_min_[0]), "escalador_max": float(escalador.data_max_[0]),
     }
-    (DIR_MODELS / f"gru_{s['id']}_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (DIR_MODELS / f"gru_{s['id']}_escalador.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     epocas = len(hist.history["loss"])
     mejor = int(np.argmin(hist.history["val_loss"])) + 1

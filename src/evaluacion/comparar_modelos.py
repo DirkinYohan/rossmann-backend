@@ -1,7 +1,11 @@
 """
 Comparación de modelos: lee los resultados que exportó CADA modelo por separado
 (exports/arima_resultados.json y exports/gru_resultados.json), arma una tabla por serie,
-indica el mejor modelo por métrica (menor = mejor) y exporta comparacion_metricas.json.
+indica el mejor modelo por métrica (menor = mejor) y exporta exports/metricas.json con:
+  - por serie: RMSE/MAE/MAPE de ARIMA y de GRU, el mejor modelo por métrica y las
+    predicciones del test (ARIMA con su IC 95 % y GRU) junto a los valores reales;
+  - un resumen global (victorias por métrica, MAPE promedio y mejor modelo general).
+Las métricas de ambos modelos se calculan sobre el MISMO periodo de test (últimos 42 días).
 
 Ejecución independiente:
     python src/evaluacion/comparar_modelos.py
@@ -25,7 +29,7 @@ def main() -> dict:
     arima = json.loads((DIR_EXPORTS / "arima_resultados.json").read_text(encoding="utf-8"))
     gru = json.loads((DIR_EXPORTS / "gru_resultados.json").read_text(encoding="utf-8"))
 
-    filas, victorias = [], {"ARIMA": 0, "GRU": 0}
+    filas, series, victorias = [], {}, {"ARIMA": 0, "GRU": 0}
     for id_serie, ra in arima["series"].items():
         rg = gru["series"].get(id_serie)
         if rg is None:
@@ -40,12 +44,23 @@ def main() -> dict:
             victorias[ganador] += 1
         fila["mejor_global"] = max(("ARIMA", "GRU"), key=lambda k: list(fila["mejor"].values()).count(k))
         filas.append(fila)
+        # Predicciones del test alineadas por fecha con los valores reales
+        series[id_serie] = {**fila, "test": [
+            {"fecha": a["fecha"], "real": a["real"], "abierto": a["abierto"],
+             "arima": a["pred"], "arima_li": a["li"], "arima_ls": a["ls"], "gru": g["pred"]}
+            for a, g in zip(ra["test"], rg["test"], strict=True)
+        ]}
 
     # Promedio de MAPE entre series (métrica comparable entre escalas distintas)
     mape_prom = {mod: round(sum(f[mod]["MAPE"] for f in filas) / len(filas), 2) for mod in ("ARIMA", "GRU")}
     salida = {
         "metricas": METRICAS, "criterio": "Menor es mejor en las tres métricas; MAPE calculado solo en días abiertos.",
-        "tabla": filas, "victorias_por_metrica": victorias, "mape_promedio": mape_prom,
+        "descripcion_metricas": {
+            "RMSE": "Raíz del error cuadrático medio: penaliza más los errores grandes.",
+            "MAE": "Error absoluto medio: error promedio en unidades de venta (€ por día).",
+            "MAPE": "Error porcentual absoluto medio (%), excluyendo días con venta real 0.",
+        },
+        "tabla": filas, "series": series, "victorias_por_metrica": victorias, "mape_promedio": mape_prom,
         "mejor_modelo_general": min(mape_prom, key=mape_prom.get),
     }
 
@@ -56,7 +71,7 @@ def main() -> dict:
             print(f"{f['nombre'] if m == 'RMSE' else '':<38}{m:<8}{fmt.format(f['ARIMA'][m])}{fmt.format(f['GRU'][m])}  {f['mejor'][m]}")
     print(f"\nVictorias por métrica: {victorias} · MAPE promedio: {mape_prom} → mejor general: {salida['mejor_modelo_general']}")
 
-    ruta = DIR_EXPORTS / "comparacion_metricas.json"
+    ruta = DIR_EXPORTS / "metricas.json"
     ruta.write_text(json.dumps(salida, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"Exportado: {ruta}")
     actualizar_readme(salida, arima, gru)
@@ -80,7 +95,7 @@ def actualizar_readme(salida: dict, arima: dict, gru: dict) -> None:
     texto = ruta.read_text(encoding="utf-8")
     if ini not in texto or fin not in texto:
         return
-    ruta_est = DIR_EXPORTS / "estacionalidad.json"
+    ruta_est = DIR_EXPORTS / "estacionalidad_informe.json"
     est = json.loads(ruta_est.read_text(encoding="utf-8"))["series"] if ruta_est.exists() else {}
 
     f0 = salida["tabla"][0]
@@ -116,8 +131,8 @@ def actualizar_readme(salida: dict, arima: dict, gru: dict) -> None:
     ]
     for id_serie, a in arima["series"].items():
         e = est.get(id_serie, {})
-        pr = e.get("pruebas", {}).get("original", {})
-        acf7 = e.get("acf", [{}] * 8)[7].get("valor", "–") if e else "–"
+        pr = e
+        acf7 = e["acf"]["valores"][7] if e else "–"
         g = gru["series"].get(id_serie, {})
         lineas.append(
             f"| {a['nombre']} | ({','.join(map(str, a['orden']))})({','.join(map(str, a['orden_estacional']))}) | "
