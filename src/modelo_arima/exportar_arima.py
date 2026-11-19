@@ -2,18 +2,19 @@
 Exportación del MODELO 1 (ARIMA) al frontend.
 
 El frontend ejecuta el propio modelo en el navegador: carga models/arima_<serie>.joblib con
-Pyodide (Python en WebAssembly) y llama a `get_forecast(steps, exog=...)`. Este script
-genera, por serie, exports/arima_meta_<serie>.json con todo lo que el navegador necesita:
+Pyodide (Python en WebAssembly) y llama a `get_forecast(steps, exog=...)`. El .joblib es el
+modelo REENTRENADO con la serie completa (ver entrenar_arima.py), así que su pronóstico
+empieza justo el día siguiente a `ultima_fecha` (01/08/2015).
 
-  - orden (p,d,q)(P,D,Q,7), nombres y ORDEN de las variables exógenas, frecuencia y
-    última fecha de entrenamiento;
-  - los 42 días de test (ventas reales y exógenas): el navegador los usa en
-    `resultados.extend(...)` para llevar el estado del modelo hasta el último dato real
-    antes de pronosticar el futuro (conserva los parámetros, no reentrena);
-  - la predicción de test que da Python con ESE MISMO .joblib, para que el frontend
-    compruebe que Pyodide calcula lo mismo.
+Este script genera, por serie, exports/arima_meta_<serie>.json con:
 
-Además verifica que el .joblib recargado pronostica igual que en el entrenamiento.
+  - orden (p,d,q)(P,D,Q,7), nombres y ORDEN de las variables exógenas, frecuencia;
+  - `ultima_fecha`: último día del dataset (= último dato que vio el modelo final);
+  - `mape_test`: MAPE del modelo en los 42 días de test (evaluado ANTES del reentrenamiento);
+  - `info_tienda`: StoreType, Assortment, CompetitionDistance y Promo2 (solo informativo;
+    vacío en "Total cadena");
+  - `referencia`: un pronóstico de 42 días que da Python con ESE MISMO .joblib (promo de
+    lunes a viernes), para que el frontend compruebe que Pyodide calcula lo mismo.
 
 Ejecución independiente (requiere haber corrido entrenar_arima.py):
     python src/modelo_arima/exportar_arima.py
@@ -32,6 +33,10 @@ import numpy as np
 import pandas as pd
 import statsmodels
 
+RAIZ_SRC = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RAIZ_SRC / "limpieza"))
+from info_tienda import info_tienda  # noqa: E402  (código compartido: ficha informativa)
+
 warnings.filterwarnings("ignore")
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -42,21 +47,28 @@ DIR_EXPORTS = RAIZ / "exports"
 HORIZONTE_TEST = 42
 
 
-def exportar_serie(id_serie: str, resultado: dict) -> dict:
+def exportar_serie(id_serie: str, resultado: dict, catalogo: dict) -> dict:
     df = pd.read_csv(DIR_PROCESSED / f"serie_{id_serie}.csv", parse_dates=["fecha"]).set_index("fecha").asfreq("D")
-    test = df.iloc[-HORIZONTE_TEST:]
     exogenas = resultado["exogenas"]
-    X_te = test[exogenas].to_numpy(float)
+    final = resultado.get("modelo_final")
+    if not final:
+        raise RuntimeError(f"arima_resultados.json no tiene el reentrenamiento final de {id_serie}: "
+                           "ejecuta entrenar_arima.py (o entrenar_arima.py --solo-final)")
+    ultima = df.index[-1]
+    if final["entrenado_hasta"] != ultima.strftime("%Y-%m-%d"):
+        raise RuntimeError(f"El modelo final de {id_serie} termina el {final['entrenado_hasta']}, pero la serie el {ultima:%Y-%m-%d}")
 
-    # Recarga del archivo que se publica y verificación contra el entrenamiento
+    # Pronóstico de referencia del .joblib publicado: 42 días desde ultima_fecha + 1 con
+    # promo de lunes a viernes y sin vacaciones ni festivos.
+    fechas = pd.date_range(ultima + pd.Timedelta(days=1), periods=HORIZONTE_TEST, freq="D")
+    valores = {"promo": (fechas.dayofweek < 5).astype(float), "school_holiday": np.zeros(len(fechas)), "festivo": np.zeros(len(fechas))}
+    X_ref = np.column_stack([valores[n] for n in exogenas])
     modelo = joblib.load(DIR_MODELS / f"arima_{id_serie}.joblib")
-    pron = modelo.get_forecast(steps=HORIZONTE_TEST, exog=X_te)
+    pron = modelo.get_forecast(steps=HORIZONTE_TEST, exog=X_ref)
     media = np.asarray(pron.predicted_mean)
     ic = np.asarray(pron.conf_int(alpha=0.05))
-    pred_entrenamiento = np.array([p["pred"] for p in resultado["test"]])
-    dif = np.abs(np.clip(media, 0, None) - pred_entrenamiento).max()
-    if dif > 0.01:  # el JSON de resultados está redondeado a 2 decimales
-        raise RuntimeError(f"El .joblib de {id_serie} no reproduce las predicciones del entrenamiento (dif={dif})")
+    if not np.all(np.isfinite(media)):
+        raise RuntimeError(f"El .joblib de {id_serie} produce valores no finitos")
 
     return {
         "serie": id_serie,
@@ -66,18 +78,26 @@ def exportar_serie(id_serie: str, resultado: dict) -> dict:
         "orden_estacional": resultado["orden_estacional"],
         "exogenas": exogenas,
         "frecuencia": "D",
-        "ultima_fecha_entrenamiento": resultado["train_fin"],
-        "aic": resultado["aic"],
-        "coeficientes_exogenas": resultado["coeficientes_exogenas"],
+        "ultima_fecha": ultima.strftime("%Y-%m-%d"),
+        "ultima_fecha_entrenamiento": final["entrenado_hasta"],
+        # El .joblib compacto guarda los últimos `dias_ancla` días e inicia su filtro en el estado
+        # del modelo completo en `fecha_ancla`. /prediccion reemplaza esos días por el historial
+        # del usuario con results.apply(..., copy_initialization=True).
+        "dias_ancla": int(modelo.nobs),
+        "fecha_ancla": (ultima - pd.Timedelta(days=int(modelo.nobs) - 1)).strftime("%Y-%m-%d"),
+        "aic": final["aic"],
+        "coeficientes_exogenas": final["coeficientes_exogenas"],
         "alfa_intervalo": 0.05,
+        "mape_test": resultado["metricas"]["MAPE"],
+        "metricas_test": resultado["metricas"],
+        "periodo_test": {"inicio": resultado["test_inicio"], "fin": resultado["test_fin"]},
+        "info_tienda": info_tienda(catalogo[id_serie]),
         "versiones": {"statsmodels": statsmodels.__version__, "numpy": np.__version__, "pandas": pd.__version__},
-        "test": {
-            "fechas": [f.strftime("%Y-%m-%d") for f in test.index],
-            "ventas": [round(float(v), 4) for v in test["ventas"]],
-            "exog": [[float(v) for v in fila] for fila in X_te],
-        },
         # Predicción SIN recortar (salida directa de get_forecast) para comparar con Pyodide
-        "referencia_test": {
+        "referencia": {
+            "descripcion": "42 días desde ultima_fecha + 1, promo de lunes a viernes, sin vacaciones ni festivos",
+            "fechas": [f.strftime("%Y-%m-%d") for f in fechas],
+            "exog": [[float(v) for v in fila] for fila in X_ref],
             "media": [float(v) for v in media],
             "li": [float(v) for v in ic[:, 0]],
             "ls": [float(v) for v in ic[:, 1]],
@@ -90,13 +110,14 @@ def main() -> dict:
     print("ETAPA 3b · EXPORTACIÓN ARIMA (.joblib + metadatos)")
     print("=" * 70)
     resultados = json.loads((DIR_EXPORTS / "arima_resultados.json").read_text(encoding="utf-8"))
+    catalogo = {s["id"]: s for s in json.loads((DIR_PROCESSED / "series.json").read_text(encoding="utf-8"))}
     for id_serie, resultado in resultados["series"].items():
-        meta = exportar_serie(id_serie, resultado)
+        meta = exportar_serie(id_serie, resultado, catalogo)
         ruta = DIR_EXPORTS / f"arima_meta_{id_serie}.json"
         ruta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         tam = (DIR_MODELS / meta["archivo"]).stat().st_size / 1e3
         print(f"▶ {resultado['nombre']:<38} {meta['archivo']} ({tam:.0f} KB) · {ruta.name} · "
-              f"exógenas={meta['exogenas']} · verificado ✓")
+              f"exógenas={meta['exogenas']} · desde {meta['ultima_fecha']} · MAPE test {meta['mape_test']:.2f}%")
     print(f"Versiones usadas: statsmodels {statsmodels.__version__}, numpy {np.__version__}, pandas {pd.__version__}")
     return resultados
 

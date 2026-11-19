@@ -7,16 +7,24 @@ Por cada serie (Total cadena + 5 tiendas):
   3. Selecciona (p,d,q)(P,D,Q,7) con pmdarima.auto_arima minimizando el AIC.
   4. Ajusta un SARIMAX de statsmodels con esos órdenes y las exógenas
      Promo, SchoolHoliday y StateHoliday codificado (festivo 0/1).
-  5. Pronostica el test (con IC 95 %) y calcula RMSE/MAE/MAPE.
-  6. Guarda el modelo ajustado COMPACTO en models/arima_<serie>.joblib (ver `compactar`).
+  5. Pronostica el test (con IC 95 %) y calcula RMSE/MAE/MAPE. Estas son las métricas
+     oficiales: el modelo NUNCA ve los 42 días de test.
+  6. REENTRENAMIENTO FINAL: vuelve a ajustar el SARIMAX con la serie COMPLETA (train + test)
+     con el mismo orden (p,d,q)(P,D,Q,7) y las mismas exógenas. Ese modelo final es el que se
+     guarda COMPACTO en models/arima_<serie>.joblib (ver `compactar`): así el frontend
+     pronostica a partir del día siguiente al último dato real (01/08/2015) sin tener que
+     extender el modelo con el test.
 
-Salida: models/arima_<serie>.joblib · exports/arima_resultados.json
+Salida: models/arima_<serie>.joblib (modelo final) · exports/arima_resultados.json
 
 Ejecución independiente:
-    python src/modelo_arima/entrenar_arima.py
+    python src/modelo_arima/entrenar_arima.py               # evaluación + reentrenamiento final
+    python src/modelo_arima/entrenar_arima.py --solo-final  # solo el reentrenamiento final, reutilizando
+                                                            # el orden y las métricas de arima_resultados.json
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -43,7 +51,11 @@ DIR_EXPORTS = RAIZ / "exports"
 
 HORIZONTE_TEST = 42          # 6 semanas: horizonte oficial de la competencia
 PERIODO_ESTACIONAL = 7       # estacionalidad semanal
-DIAS_ANCLA = 28              # observaciones que conserva el modelo compacto (ver `compactar`)
+# Observaciones que conserva el modelo compacto (ver `compactar`). Coincide con los 30 días de
+# historial de /prediccion: el estado inicial del .joblib es el del primer día de esa ventana,
+# así `results.apply(..., copy_initialization=True)` con las ventas del usuario parte del estado
+# entrenado en esa fecha (con las ventas del dataset reproduce exactamente el pronóstico base).
+DIAS_ANCLA = 30
 # StateHoliday se codifica como un indicador 0/1 ("hay festivo"): las categorías b (Pascua) y
 # c (Navidad) aparecen muy pocas veces y por separado harían la matriz exógena casi singular.
 EXOGENAS = ["promo", "school_holiday", "festivo"]
@@ -88,8 +100,8 @@ def compactar(res, y: np.ndarray, X: np.ndarray):
     `remove_data=True` no sirve aquí: statsmodels borra `model.endog` y luego `get_forecast`
     falla porque lo necesita para calcular el índice de la predicción. En su lugar se
     "reancla" el modelo: se construye un SARIMAX con los mismos órdenes solo sobre los
-    últimos 28 días y se inicializa su filtro de Kalman con el estado (media y covarianza)
-    que el modelo completo tenía en ese punto. Al filtrar esos 28 días con los mismos
+    últimos 30 días y se inicializa su filtro de Kalman con el estado (media y covarianza)
+    que el modelo completo tenía en ese punto. Al filtrar esos 30 días con los mismos
     parámetros, el estado final es idéntico al del modelo completo → mismos pronósticos e
     intervalos, pero el archivo pasa de ~45 MB a unos cientos de KB.
 
@@ -101,6 +113,43 @@ def compactar(res, y: np.ndarray, X: np.ndarray):
                      seasonal_order=res.model.seasonal_order, **OPCIONES_SARIMAX)
     modelo.ssm.initialize_known(res.predicted_state[:, T - K], res.predicted_state_cov[:, :, T - K])
     return modelo.filter(res.params)
+
+
+def guardar_compacto(res, y: np.ndarray, X: np.ndarray, ruta: Path) -> None:
+    """Compacta el modelo, comprueba que pronostica igual que el completo y lo guarda."""
+    X_fut = np.zeros((HORIZONTE_TEST, X.shape[1]))
+    X_fut[::2, 0] = 1  # exógenas de prueba no triviales (promo días alternos)
+    pron = res.get_forecast(steps=HORIZONTE_TEST, exog=X_fut)
+    media, ic = np.asarray(pron.predicted_mean), np.asarray(pron.conf_int(alpha=0.05))
+    comp = compactar(res, y, X)
+    pron_c = comp.get_forecast(steps=HORIZONTE_TEST, exog=X_fut)
+    dif = max(np.abs(np.asarray(pron_c.predicted_mean) - media).max(), np.abs(np.asarray(pron_c.conf_int(alpha=0.05)) - ic).max())
+    if dif > 1e-6 * max(1.0, np.abs(media).max()):
+        raise RuntimeError(f"El modelo compacto {ruta.name} difiere del completo en {dif}")
+    DIR_MODELS.mkdir(parents=True, exist_ok=True)
+    joblib.dump(comp, ruta, compress=3)
+
+
+def reentrenar_final(id_serie: str, orden, orden_est) -> dict:
+    """
+    Reentrena con la serie COMPLETA usando el mismo orden elegido en train y guarda el .joblib.
+    No se vuelve a buscar el orden: se conserva la especificación evaluada en el test.
+    """
+    df = cargar_serie(id_serie)
+    y, X = df["ventas"].to_numpy(float), df[EXOGENAS].to_numpy(float)
+    res = SARIMAX(y, exog=X, order=tuple(orden), seasonal_order=tuple(orden_est), **OPCIONES_SARIMAX).fit(disp=False, maxiter=200)
+    ruta = DIR_MODELS / f"arima_{id_serie}.joblib"
+    guardar_compacto(res, y, X, ruta)
+    coef = {n: round(float(v), 4) for n, v in zip(res.model.param_names, res.params)}
+    return {
+        "entrenado_desde": df.index[0].strftime("%Y-%m-%d"),
+        "entrenado_hasta": df.index[-1].strftime("%Y-%m-%d"),
+        "observaciones": int(res.nobs),
+        "aic": round(float(res.aic), 2),
+        "coeficientes_exogenas": {EXOGENAS[i]: coef[f"x{i + 1}"] for i in range(len(EXOGENAS))},
+        "archivo": ruta.name,
+        "tamano_kb": round(ruta.stat().st_size / 1e3, 1),
+    }
 
 
 def entrenar_serie(s: dict) -> dict:
@@ -118,16 +167,6 @@ def entrenar_serie(s: dict) -> dict:
     media = np.asarray(pron.predicted_mean)
     ic = np.asarray(pron.conf_int(alpha=0.05))
 
-    # Modelo compacto: se comprueba que pronostique exactamente lo mismo antes de guardarlo.
-    comp = compactar(res, y_tr, X_tr)
-    pron_c = comp.get_forecast(steps=HORIZONTE_TEST, exog=X_te)
-    dif = max(np.abs(np.asarray(pron_c.predicted_mean) - media).max(), np.abs(np.asarray(pron_c.conf_int(alpha=0.05)) - ic).max())
-    if dif > 1e-6 * max(1.0, np.abs(media).max()):
-        raise RuntimeError(f"El modelo compacto de {s['id']} difiere del completo en {dif}")
-    DIR_MODELS.mkdir(parents=True, exist_ok=True)
-    ruta = DIR_MODELS / f"arima_{s['id']}.joblib"
-    joblib.dump(comp, ruta, compress=3)
-
     # Las ventas no pueden ser negativas: se recortan predicción y límite inferior en 0.
     pred, li, ls = np.clip(media, 0, None), np.clip(ic[:, 0], 0, None), ic[:, 1]
     # Se evalúa SOLO en días con venta real (los interpolados no son observaciones).
@@ -138,8 +177,10 @@ def entrenar_serie(s: dict) -> dict:
     coef = {n: round(float(v), 4) for n, v in zip(nombres_param, res.params)}
     coef_exog = {EXOGENAS[i]: coef[f"x{i + 1}"] for i in range(len(EXOGENAS))}
     print(f"▶ {s['nombre']:<38} SARIMAX{orden}x{orden_est}  AIC={res.aic:,.1f}  "
-          f"RMSE={metricas['RMSE']:,.0f}  MAE={metricas['MAE']:,.0f}  MAPE={metricas['MAPE']:.2f}%  "
-          f"· {ruta.name} {ruta.stat().st_size / 1e3:.0f} KB  ({time.time() - t0:.0f}s)")
+          f"RMSE={metricas['RMSE']:,.0f}  MAE={metricas['MAE']:,.0f}  MAPE={metricas['MAPE']:.2f}%  ({time.time() - t0:.0f}s)")
+    final = reentrenar_final(s["id"], orden, orden_est)
+    print(f"    reentrenamiento final con la serie completa (hasta {final['entrenado_hasta']}) "
+          f"→ {final['archivo']} {final['tamano_kb']:.0f} KB")
     return {
         "nombre": s["nombre"],
         "orden": list(orden), "orden_estacional": list(orden_est),
@@ -149,6 +190,7 @@ def entrenar_serie(s: dict) -> dict:
         "train_inicio": train.index[0].strftime("%Y-%m-%d"), "train_fin": train.index[-1].strftime("%Y-%m-%d"),
         "test_inicio": test.index[0].strftime("%Y-%m-%d"), "test_fin": test.index[-1].strftime("%Y-%m-%d"),
         "metricas": metricas,
+        "modelo_final": final,
         "test": [
             {"fecha": f.strftime("%Y-%m-%d"), "real": round(float(v), 2), "abierto": int(a),
              "pred": round(float(p), 2), "li": round(float(l), 2), "ls": round(float(u), 2)}
@@ -157,14 +199,34 @@ def entrenar_serie(s: dict) -> dict:
     }
 
 
+def solo_final() -> dict:
+    """Reentrenamiento final reutilizando orden y métricas ya calculados (no toca el test)."""
+    ruta = DIR_EXPORTS / "arima_resultados.json"
+    salida = json.loads(ruta.read_text(encoding="utf-8"))
+    for id_serie, r in salida["series"].items():
+        t0 = time.time()
+        r["modelo_final"] = reentrenar_final(id_serie, r["orden"], r["orden_estacional"])
+        print(f"▶ {r['nombre']:<38} SARIMAX{tuple(r['orden'])}x{tuple(r['orden_estacional'])} "
+              f"reentrenado hasta {r['modelo_final']['entrenado_hasta']} · MAPE test (sin cambios)={r['metricas']['MAPE']:.2f}% "
+              f"· {r['modelo_final']['archivo']} ({time.time() - t0:.0f}s)")
+    return salida
+
+
 def main() -> dict:
+    parser = argparse.ArgumentParser(description="Entrenamiento ARIMA")
+    parser.add_argument("--solo-final", action="store_true",
+                        help="solo reentrena con la serie completa (usa el orden de arima_resultados.json)")
+    args = parser.parse_args()
     print("=" * 70)
-    print("ETAPA 3 · MODELO ARIMA (SARIMAX + exógenas)")
+    print("ETAPA 3 · MODELO ARIMA (SARIMAX + exógenas)" + (" · SOLO REENTRENAMIENTO FINAL" if args.solo_final else ""))
     print("=" * 70)
-    catalogo = json.loads((DIR_PROCESSED / "series.json").read_text(encoding="utf-8"))
-    salida = {"modelo": "ARIMA", "horizonte_test": HORIZONTE_TEST, "series": {}}
-    for s in catalogo:
-        salida["series"][s["id"]] = entrenar_serie(s)
+    if args.solo_final:
+        salida = solo_final()
+    else:
+        catalogo = json.loads((DIR_PROCESSED / "series.json").read_text(encoding="utf-8"))
+        salida = {"modelo": "ARIMA", "horizonte_test": HORIZONTE_TEST, "series": {}}
+        for s in catalogo:
+            salida["series"][s["id"]] = entrenar_serie(s)
     DIR_EXPORTS.mkdir(parents=True, exist_ok=True)
     ruta = DIR_EXPORTS / "arima_resultados.json"
     ruta.write_text(json.dumps(salida, ensure_ascii=False, indent=1), encoding="utf-8")

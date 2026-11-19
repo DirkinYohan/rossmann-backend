@@ -372,7 +372,20 @@
      "li": 5554428.68,
      "ls": 13196022.37
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "observaciones": 942,
+    "aic": 28032.74,
+    "coeficientes_exogenas": {
+     "promo": 2456793.0532,
+     "school_holiday": 748005.7874,
+     "festivo": -7588782.6979
+    },
+    "archivo": "arima_total_cadena.joblib",
+    "tamano_kb": 373.1
+   }
   },
   "tienda_770": {
    "nombre": "Tienda 770 (tipo a)",
@@ -744,7 +757,20 @@
      "li": 5357.99,
      "ls": 10438.79
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "observaciones": 942,
+    "aic": 15474.73,
+    "coeficientes_exogenas": {
+     "promo": 2439.1676,
+     "school_holiday": 123.8962,
+     "festivo": 218.4327
+    },
+    "archivo": "arima_tienda_770.joblib",
+    "tamano_kb": 310.5
+   }
   },
   "tienda_1097": {
    "nombre": "Tienda 1097 (tipo b)",
@@ -1116,7 +1142,20 @@
      "li": 8277.98,
      "ls": 12494.43
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "observaciones": 942,
+    "aic": 15047.73,
+    "coeficientes_exogenas": {
+     "promo": 1231.7734,
+     "school_holiday": -800.0854,
+     "festivo": 4183.2356
+    },
+    "archivo": "arima_tienda_1097.joblib",
+    "tamano_kb": 317.7
+   }
   },
   "tienda_1044": {
    "nombre": "Tienda 1044 (tipo c)",
@@ -1488,7 +1527,20 @@
      "li": 3229.99,
      "ls": 11794.12
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "observaciones": 942,
+    "aic": 15597.92,
+    "coeficientes_exogenas": {
+     "promo": 1864.3399,
+     "school_holiday": 402.8126,
+     "festivo": -49.7779
+    },
+    "archivo": "arima_tienda_1044.joblib",
+    "tamano_kb": 129.6
+   }
   },
   "tienda_352": {
    "nombre": "Tienda 352 (tipo d)",
@@ -1860,7 +1912,20 @@
      "li": 2594.51,
      "ls": 12215.67
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "observaciones": 942,
+    "aic": 15353.49,
+    "coeficientes_exogenas": {
+     "promo": 1642.7315,
+     "school_holiday": 305.1763,
+     "festivo": 868.9196
+    },
+    "archivo": "arima_tienda_352.joblib",
+    "tamano_kb": 106.2
+   }
   },
   "tienda_262": {
    "nombre": "Tienda 262 (tipo b, mayor volumen)",
@@ -2232,7 +2297,20 @@
      "li": 17741.57,
      "ls": 27916.83
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "observaciones": 942,
+    "aic": 16764.86,
+    "coeficientes_exogenas": {
+     "promo": 3002.958,
+     "school_holiday": 604.3192,
+     "festivo": 13556.2103
+    },
+    "archivo": "arima_tienda_262.joblib",
+    "tamano_kb": 283.8
+   }
   }
  }
 }

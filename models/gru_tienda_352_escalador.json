@@ -14,5 +14,6 @@
     "mes_cos"
   ],
   "escalador_min": 3636.0,
-  "escalador_max": 13967.0
+  "escalador_max": 13967.0,
+  "entrenado_hasta": "2015-07-31"
 }

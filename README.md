@@ -56,16 +56,19 @@ Ejecuta en orden: **limpieza → estacionalidad → ARIMA → GRU → métricas 
 ```bash
 python run_all.py --desde gru      # retoma desde una etapa (limpieza|estacionalidad|arima|gru|metricas)
 python run_all.py --solo-copiar    # solo copia los artefactos al frontend
+python run_all.py --solo-final     # solo reentrena ARIMA y GRU con la serie completa, exporta y copia
 ```
+
+`--solo-final` no repite la evaluación: reutiliza el orden SARIMAX, la mejor época del GRU y las métricas que ya están en `exports/*_resultados.json` (así las métricas de test no cambian) y solo regenera los modelos finales y sus metadatos. Tarda ~1 minuto.
 
 Cada etapa también se puede ejecutar sola:
 
 ```bash
 python src/limpieza/limpiar_datos.py
 python src/estacionalidad/analisis_estacionalidad.py
-python src/modelo_arima/entrenar_arima.py
+python src/modelo_arima/entrenar_arima.py      # añade --solo-final para solo reentrenar
 python src/modelo_arima/exportar_arima.py
-python src/modelo_gru/entrenar_gru.py
+python src/modelo_gru/entrenar_gru.py          # añade --solo-final para solo reentrenar
 python src/modelo_gru/exportar_gru.py
 python src/evaluacion/comparar_modelos.py
 ```
@@ -75,7 +78,7 @@ python src/evaluacion/comparar_modelos.py
 1. Ejecuta `python run_all.py` una vez.
 2. Cierra la terminal del backend. Si quieres comprobarlo a fondo, mueve o renombra la carpeta `rossmann-backend/`.
 3. En `rossmann-frontend/` ejecuta `npm run dev`, o `npm run build:estatico` y publica `out/` en cualquier hosting de archivos.
-4. Abre `/dashboard`, `/escenarios` y `/temporal`. Las tres páginas funcionan:
+4. Abre `/dashboard`, `/escenarios`, `/prediccion` y `/temporal`. Las cuatro páginas funcionan:
    - el panel **Verificación de la ejecución en el navegador** del dashboard muestra ARIMA (Pyodide) y GRU (TypeScript) con ✓;
    - la pestaña Red del navegador solo muestra peticiones al propio sitio y al CDN de Pyodide.
 
@@ -84,12 +87,13 @@ python src/evaluacion/comparar_modelos.py
 ```
 src/
 ├── limpieza/limpiar_datos.py              (compartido) datos crudos → series diarias limpias + historicos.json
+├── limpieza/info_tienda.py                (compartido) ficha StoreType/Assortment/CompetitionDistance/Promo2
 ├── estacionalidad/analisis_estacionalidad.py    módulo separado → estacionalidad_informe.json
 ├── modelo_arima/                          MODELO 1: no importa nada del GRU
-│   ├── entrenar_arima.py                  auto_arima → SARIMAX → test → models/arima_<serie>.joblib
+│   ├── entrenar_arima.py                  auto_arima → SARIMAX → test → reentreno con todo → models/arima_<serie>.joblib
 │   └── exportar_arima.py                  recarga y verifica el .joblib → arima_meta_<serie>.json
 ├── modelo_gru/                            MODELO 2: no importa nada del ARIMA
-│   ├── entrenar_gru.py                    ventanas 30→1 → GRU → test recursivo → models/gru_<serie>.keras
+│   ├── entrenar_gru.py                    ventanas 30→1 → GRU → test recursivo → reentreno con todo → models/gru_<serie>.keras
 │   └── exportar_gru.py                    gru_meta_<serie>.json + gru_referencia_<serie>.json
 └── evaluacion/                            (compartido)
     ├── metricas.py                        rmse, mae, mape
@@ -127,6 +131,27 @@ Con los datos de Kaggle salieron las tiendas **770 (a), 1097 (b), 1044 (c), 352 
 - El periodo de test es el mismo para los dos modelos, y `comparar_modelos.py` lo verifica.
 - Ambos modelos pronostican los 42 días **de una sola vez desde el final de train**: ninguno ve valores reales del test.
 
+### Reentrenamiento final (modelos que usa el frontend)
+
+Las métricas son las oficiales y salen de modelos que **nunca vieron el test**. Después de evaluar, cada script vuelve a entrenar el modelo con la **serie completa** (1 ene 2013 – 31 jul 2015) con los mismos hiperparámetros:
+
+| Modelo | Qué se conserva | Qué cambia |
+|---|---|---|
+| ARIMA | El orden (p,d,q)(P,D,Q,7) elegido por `auto_arima` en train y las mismas exógenas | Se reajustan los parámetros con los 942 días |
+| GRU | Arquitectura, ventana, batch, optimizador y semilla. Épocas = la mejor época de la evaluación (ya no queda un tramo para validar) | El `MinMaxScaler` se ajusta con la serie completa |
+
+Esa versión reentrenada es la que se exporta como `arima_<serie>.joblib` y `gru_<serie>.keras`. Así **la predicción empieza justo el día siguiente al último dato (01/08/2015)**, sin tener que extender el modelo con el test en el navegador. Los metadatos de cada serie incluyen además:
+
+| Clave | Archivo | Contenido |
+|---|---|---|
+| `ultima_fecha` | `arima_meta_` y `gru_meta_` | Último día del dataset (2015-07-31) |
+| `ventana_gru` | `gru_meta_` | Los últimos 30 días: ventas (interpoladas en días cerrados), ventas escaladas, `abierto`, `promo`, `school_holiday`, `festivo_a/b/c`, `state_holiday` |
+| `info_tienda` | `arima_meta_` y `gru_meta_` | `StoreType`, `Assortment`, `CompetitionDistance`, `Promo2` (solo informativos; `{}` en Total cadena) |
+| `mape_test` | `arima_meta_` y `gru_meta_` | MAPE del modelo en los 42 días de test |
+| `dias_ancla`, `fecha_ancla` | `arima_meta_` | El `.joblib` compacto guarda los últimos 30 días (desde `fecha_ancla`); `/prediccion` los sustituye por el historial del usuario |
+
+> `info_tienda` se lee de `data/raw/store.csv`. Si ese archivo no está, solo se rellena `StoreType` (que viene en `series.json`) y el resto queda en `null`; la página `/prediccion` lo muestra como "No disponible". Para completarla basta con copiar `store.csv` en `data/raw/` y ejecutar `python run_all.py --solo-final`.
+
 ## Informe de estacionariedad (`estacionalidad/`)
 
 Es un módulo **independiente de los modelos**. Genera `estacionalidad_informe.json` con, por serie:
@@ -155,22 +180,24 @@ El frontend solo **presenta** este informe en `/temporal`; no recalcula nada.
 
 > **Por qué no `remove_data=True`.** Lo probé, y con statsmodels 0.14.6 `get_forecast` falla después de quitar los datos: necesita `model.endog` para calcular el índice de la predicción (`TypeError: object of type 'NoneType' has no len()`).
 >
-> En su lugar, `entrenar_arima.py` **reancla** el modelo: crea un SARIMAX con los mismos órdenes solo sobre los últimos 28 días y le pone como estado inicial "conocido" el estado del filtro de Kalman del modelo completo en ese punto. Al filtrar esos 28 días con los mismos parámetros, llega exactamente al mismo estado final, así que pronostica igual: la diferencia en media e IC 95 % es 0,0, y el script lo comprueba antes de guardar.
+> En su lugar, `entrenar_arima.py` **reancla** el modelo: crea un SARIMAX con los mismos órdenes solo sobre los últimos 30 días y le pone como estado inicial "conocido" el estado del filtro de Kalman del modelo completo en ese punto. Al filtrar esos 30 días con los mismos parámetros, llega exactamente al mismo estado final, así que pronostica igual: la diferencia en media e IC 95 % es 0,0, y el script lo comprueba antes de guardar.
+>
+> Los 30 días coinciden con el historial de `/prediccion`: si el usuario ingresa sus ventas, el navegador hace `results.apply(endog, exog, copy_initialization=True)`, que parte del estado entrenado en ese primer día y filtra las ventas del usuario en lugar de las del dataset. Con las ventas del dataset se obtiene exactamente el pronóstico base (comprobado: diferencia 0,0). Con una inicialización difusa (el valor por defecto de `apply`), 30 datos no bastan para los hasta 18 estados del SARIMAX estacional y el pronóstico sale absurdo (negativo en Total cadena).
 >
 > Así, cada archivo pesa **100–340 KB, frente a 32–45 MB** del modelo completo.
 
-`exportar_arima.py` recarga cada `.joblib`, verifica que reproduce las predicciones del entrenamiento y escribe `arima_meta_<serie>.json` con:
+`exportar_arima.py` recarga cada `.joblib` (el modelo final), comprueba que termina en el último día de la serie y escribe `arima_meta_<serie>.json` con:
 
 - orden y orden estacional;
 - nombres y orden de las exógenas;
-- frecuencia (`D`) y última fecha de entrenamiento;
-- los 42 días de test (ventas y exógenas);
-- la predicción de referencia que da Python con ese `.joblib`.
+- frecuencia (`D`), `ultima_fecha`, `dias_ancla` y `fecha_ancla`;
+- `mape_test`, `metricas_test` e `info_tienda`;
+- `referencia`: un pronóstico de 42 días (promo de lunes a viernes) que da Python con ese `.joblib`; el dashboard lo compara con Pyodide.
 
 En el navegador:
 
-- **Test:** `get_forecast(42, exog=X_test)`.
-- **Futuro:** primero `extend(y_test, exog=X_test)`, que lleva el estado hasta el último dato real sin reentrenar; después `forecast(h, exog=X_escenario)` y `get_forecast(...).conf_int()`.
+- **Futuro (escenarios y dashboard):** `get_forecast(h, exog=X_escenario)` con IC 95 %, directamente desde el 01/08/2015.
+- **Historial propio (`/prediccion`):** `results.apply(endog=ventas_usuario, exog=exog_usuario, copy_initialization=True)` sobre las fechas de esos 30 días y después `get_forecast(steps=N, exog=exog_futuro)`.
 
 ### Por qué esos parámetros (ACF/PACF y ADF/KPSS)
 
@@ -200,8 +227,9 @@ Input (30 pasos × 10 features)
 - **Guardado con `model.save("gru_<serie>.keras")`.** Es un ZIP con `config.json` y `model.weights.h5`.
   - Ojo: dentro del `.h5`, Keras 3 nombra las capas por clase y orden (`layers/gru`, `layers/gru_1`, `layers/dense`, `layers/dense_1`), no con el nombre del config.
   - El bias del GRU tiene forma (2, 3u): bias de entrada y bias recurrente, porque usa `reset_after=True`. Las gates van en orden z, r, h.
+- **Modelo final:** tras evaluar, se reentrena con la serie completa (tantas épocas como la mejor época de la evaluación) y ese es el `.keras` que se exporta.
 - `exportar_gru.py` escribe:
-  - `gru_meta_<serie>.json`: el escalador, las features, la ventana, las capas y los últimos 30 días;
+  - `gru_meta_<serie>.json`: el escalador, las features, la ventana, las capas, `ultima_fecha`, `ventana_gru` (los últimos 30 días), `info_tienda` y `mape_test`;
   - `gru_referencia_<serie>.json`: 5 ventanas reales del test con la salida de Keras. El navegador las ejecuta al cargar el modelo y exige una diferencia < 1e-4.
 
 ## Resultados
@@ -247,8 +275,8 @@ Medida en el dashboard sobre la serie Total cadena:
 
 | Modelo | Comparación | Diferencia máxima |
 |---|---|---|
-| ARIMA (`.joblib` en Pyodide 314.0.8) | Pronóstico de test (media + IC 95 %) vs. Python con el mismo archivo | 1,86e-9 € (relativa 3,4e-16) |
-| GRU (`.keras` → TypeScript) | 5 ventanas de referencia vs. Keras | 4,99e-8 (tolerancia 1e-4) |
+| ARIMA (`.joblib` final en Pyodide 314.0.8) | Pronóstico de referencia de 42 días (media + IC 95 %) vs. Python con el mismo archivo | 0,0 € |
+| GRU (`.keras` final → TypeScript) | 5 ventanas de referencia vs. Keras | 9,95e-8 (tolerancia 1e-4) |
 
 ## Métricas (`evaluacion/metricas.py`)
 

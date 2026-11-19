@@ -406,7 +406,17 @@
      "abierto": 1,
      "pred": 7887733.0
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "ventanas": 912,
+    "epocas": 50,
+    "loss_final": 0.002141,
+    "escalador_min": 97235.0,
+    "escalador_max": 15623548.0,
+    "archivo": "gru_total_cadena.keras"
+   }
   },
   "tienda_770": {
    "nombre": "Tienda 770 (tipo a)",
@@ -735,7 +745,17 @@
      "abierto": 1,
      "pred": 7103.33
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "ventanas": 912,
+    "epocas": 18,
+    "loss_final": 0.006521,
+    "escalador_min": 1603.0,
+    "escalador_max": 14621.0,
+    "archivo": "gru_tienda_770.keras"
+   }
   },
   "tienda_1097": {
    "nombre": "Tienda 1097 (tipo b)",
@@ -1084,7 +1104,17 @@
      "abierto": 1,
      "pred": 9504.59
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "ventanas": 912,
+    "epocas": 28,
+    "loss_final": 0.005675,
+    "escalador_min": 5460.0,
+    "escalador_max": 17039.0,
+    "archivo": "gru_tienda_1097.keras"
+   }
   },
   "tienda_1044": {
    "nombre": "Tienda 1044 (tipo c)",
@@ -1443,7 +1473,17 @@
      "abierto": 1,
      "pred": 7004.81
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "ventanas": 912,
+    "epocas": 33,
+    "loss_final": 0.005187,
+    "escalador_min": 1783.0,
+    "escalador_max": 13993.0,
+    "archivo": "gru_tienda_1044.keras"
+   }
   },
   "tienda_352": {
    "nombre": "Tienda 352 (tipo d)",
@@ -1810,7 +1850,17 @@
      "abierto": 1,
      "pred": 7921.88
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "ventanas": 912,
+    "epocas": 37,
+    "loss_final": 0.005255,
+    "escalador_min": 3636.0,
+    "escalador_max": 13967.0,
+    "archivo": "gru_tienda_352.keras"
+   }
   },
   "tienda_262": {
    "nombre": "Tienda 262 (tipo b, mayor volumen)",
@@ -2215,7 +2265,17 @@
      "abierto": 1,
      "pred": 20208.17
     }
-   ]
+   ],
+   "modelo_final": {
+    "entrenado_desde": "2013-01-01",
+    "entrenado_hasta": "2015-07-31",
+    "ventanas": 912,
+    "epocas": 56,
+    "loss_final": 0.004333,
+    "escalador_min": 13210.0,
+    "escalador_max": 38722.0,
+    "archivo": "gru_tienda_262.keras"
+   }
   }
  }
 }

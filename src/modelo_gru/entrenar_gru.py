@@ -20,15 +20,24 @@ Diseño
 - Arquitectura: GRU(64, return_sequences=True) → Dropout(0.2) → GRU(32) → Dense(16, relu) → Dense(1).
 - EarlyStopping(val_loss, paciencia 10) con validación = 10 % final de las ventanas de train
   (orden temporal, sin mezclar). Semillas fijas.
+- Las métricas de test (últimos 42 días) se calculan con ese modelo, que NUNCA ve el test.
+- REENTRENAMIENTO FINAL: después de evaluar, se entrena de nuevo la misma arquitectura con
+  la serie COMPLETA (train + test), mismos hiperparámetros y tantas épocas como la mejor
+  época de la evaluación (ya no queda un tramo para validar). El MinMaxScaler se ajusta con
+  la serie completa. Ese modelo final es el que se exporta: el frontend pronostica a partir
+  del día siguiente al último dato real (01/08/2015).
 
-Salida: models/gru_<serie>.keras (formato Keras 3), models/gru_<serie>_escalador.json,
+Salida: models/gru_<serie>.keras (modelo final, formato Keras 3), models/gru_<serie>_escalador.json,
         exports/gru_resultados.json
 
 Ejecución independiente:
-    python src/modelo_gru/entrenar_gru.py
+    python src/modelo_gru/entrenar_gru.py               # evaluación + reentrenamiento final
+    python src/modelo_gru/entrenar_gru.py --solo-final  # solo el reentrenamiento final, con la mejor
+                                                        # época y las métricas de gru_resultados.json
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -127,6 +136,43 @@ def pronostico_recursivo(modelo, historia_esc: np.ndarray, exog_total: np.ndarra
     return np.asarray(ventas[inicio:], dtype=np.float32)
 
 
+def reentrenar_final(id_serie: str, epocas: int) -> dict:
+    """
+    Entrena con TODAS las ventanas de la serie completa durante `epocas` épocas (la mejor
+    época de la evaluación) y guarda el .keras y el escalador que usa el frontend.
+    """
+    fijar_semillas()
+    df = cargar_serie(id_serie)
+    escalador = MinMaxScaler()
+    escalador.fit(df[["ventas"]].values)
+    ventas_esc = escalador.transform(df[["ventas"]].values).ravel().astype(np.float32)
+    exog = exogenas(df)
+    idx = np.arange(VENTANA, len(df))
+    X = np.stack([ventana(ventas_esc, exog, t) for t in idx])
+    y = ventas_esc[idx]
+
+    modelo = construir_modelo(X.shape[2])
+    hist = modelo.fit(X, y, epochs=epocas, batch_size=BATCH, shuffle=True, verbose=0)
+
+    DIR_MODELS.mkdir(parents=True, exist_ok=True)
+    ruta = DIR_MODELS / f"gru_{id_serie}.keras"
+    modelo.save(ruta)
+    meta = {
+        "id": id_serie, "ventana": VENTANA, "features": FEATURES,
+        "escalador_min": float(escalador.data_min_[0]), "escalador_max": float(escalador.data_max_[0]),
+        "entrenado_hasta": df["fecha"].iloc[-1].strftime("%Y-%m-%d"),
+    }
+    (DIR_MODELS / f"gru_{id_serie}_escalador.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {
+        "entrenado_desde": df["fecha"].iloc[0].strftime("%Y-%m-%d"),
+        "entrenado_hasta": meta["entrenado_hasta"],
+        "ventanas": int(len(X)), "epocas": int(epocas),
+        "loss_final": round(float(hist.history["loss"][-1]), 6),
+        "escalador_min": meta["escalador_min"], "escalador_max": meta["escalador_max"],
+        "archivo": ruta.name,
+    }
+
+
 def entrenar_serie(s: dict) -> dict:
     fijar_semillas()
     df = cargar_serie(s["id"])
@@ -160,18 +206,12 @@ def entrenar_serie(s: dict) -> dict:
     mascara = test["abierto"].values == 1
     metricas = calcular_metricas(test["ventas"].values[mascara], pred[mascara])
 
-    DIR_MODELS.mkdir(parents=True, exist_ok=True)
-    modelo.save(DIR_MODELS / f"gru_{s['id']}.keras")
-    meta = {
-        "id": s["id"], "ventana": VENTANA, "features": FEATURES,
-        "escalador_min": float(escalador.data_min_[0]), "escalador_max": float(escalador.data_max_[0]),
-    }
-    (DIR_MODELS / f"gru_{s['id']}_escalador.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
     epocas = len(hist.history["loss"])
     mejor = int(np.argmin(hist.history["val_loss"])) + 1
     print(f"▶ {s['nombre']:<38} épocas={epocas} (mejor={mejor})  val_loss={min(hist.history['val_loss']):.5f}  "
           f"RMSE={metricas['RMSE']:,.0f}  MAE={metricas['MAE']:,.0f}  MAPE={metricas['MAPE']:.2f}%  ({time.time() - t0:.0f}s)")
+    final = reentrenar_final(s["id"], mejor)
+    print(f"    reentrenamiento final con la serie completa (hasta {final['entrenado_hasta']}, {final['epocas']} épocas) → {final['archivo']}")
     return {
         "nombre": s["nombre"],
         "epocas_entrenadas": epocas, "mejor_epoca": mejor,
@@ -182,6 +222,7 @@ def entrenar_serie(s: dict) -> dict:
         "parametros": int(modelo.count_params()),
         "test_inicio": test["fecha"].iloc[0].strftime("%Y-%m-%d"), "test_fin": test["fecha"].iloc[-1].strftime("%Y-%m-%d"),
         "metricas": metricas,
+        "modelo_final": final,
         "test": [
             {"fecha": f.strftime("%Y-%m-%d"), "real": round(float(v), 2), "abierto": int(a), "pred": round(float(p), 2)}
             for f, v, a, p in zip(test["fecha"], test["ventas"], test["abierto"], pred)
@@ -189,14 +230,32 @@ def entrenar_serie(s: dict) -> dict:
     }
 
 
+def solo_final() -> dict:
+    """Reentrenamiento final reutilizando la mejor época y las métricas ya calculadas."""
+    salida = json.loads((DIR_EXPORTS / "gru_resultados.json").read_text(encoding="utf-8"))
+    for id_serie, r in salida["series"].items():
+        t0 = time.time()
+        r["modelo_final"] = reentrenar_final(id_serie, r["mejor_epoca"])
+        print(f"▶ {r['nombre']:<38} reentrenado hasta {r['modelo_final']['entrenado_hasta']} con {r['mejor_epoca']} épocas "
+              f"· MAPE test (sin cambios)={r['metricas']['MAPE']:.2f}% ({time.time() - t0:.0f}s)")
+    return salida
+
+
 def main() -> dict:
+    parser = argparse.ArgumentParser(description="Entrenamiento GRU")
+    parser.add_argument("--solo-final", action="store_true",
+                        help="solo reentrena con la serie completa (usa la mejor época de gru_resultados.json)")
+    args = parser.parse_args()
     print("=" * 70)
-    print("ETAPA 4 · MODELO GRU (TensorFlow/Keras)")
+    print("ETAPA 4 · MODELO GRU (TensorFlow/Keras)" + (" · SOLO REENTRENAMIENTO FINAL" if args.solo_final else ""))
     print("=" * 70)
-    catalogo = json.loads((DIR_PROCESSED / "series.json").read_text(encoding="utf-8"))
-    salida = {"modelo": "GRU", "horizonte_test": HORIZONTE_TEST, "ventana": VENTANA, "features": FEATURES, "series": {}}
-    for s in catalogo:
-        salida["series"][s["id"]] = entrenar_serie(s)
+    if args.solo_final:
+        salida = solo_final()
+    else:
+        catalogo = json.loads((DIR_PROCESSED / "series.json").read_text(encoding="utf-8"))
+        salida = {"modelo": "GRU", "horizonte_test": HORIZONTE_TEST, "ventana": VENTANA, "features": FEATURES, "series": {}}
+        for s in catalogo:
+            salida["series"][s["id"]] = entrenar_serie(s)
     DIR_EXPORTS.mkdir(parents=True, exist_ok=True)
     ruta = DIR_EXPORTS / "gru_resultados.json"
     ruta.write_text(json.dumps(salida, ensure_ascii=False, indent=1), encoding="utf-8")

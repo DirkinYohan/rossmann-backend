@@ -23,6 +23,9 @@ _sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # consola de Window
 import numpy as np
 import pandas as pd
 
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from info_tienda import info_desde_store  # noqa: E402  (ficha informativa para /prediccion)
+
 # ---------------------------------------------------------------------------
 # Rutas (relativas a rossmann-backend/, sin importar desde dónde se ejecute)
 # ---------------------------------------------------------------------------
@@ -278,6 +281,10 @@ def main() -> dict:
         "id": "total_cadena", "store": None, "store_type": None,
         "criterio": "Suma diaria de ventas de todas las tiendas abiertas", "nombre": "Total cadena",
     }] + tiendas
+    # Ficha informativa de cada tienda (solo se muestra en /prediccion; no entra en los modelos).
+    store_idx = store.set_index("Store")
+    for s in catalogo:
+        s["info_tienda"] = info_desde_store(store_idx, s["store"])
 
     DIR_PROCESSED.mkdir(parents=True, exist_ok=True)
     DIR_EXPORTS.mkdir(parents=True, exist_ok=True)
