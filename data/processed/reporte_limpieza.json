@@ -1,0 +1,75 @@
+{
+  "filas_train_original": 1017209,
+  "filas_store_original": 1115,
+  "filas_tras_merge": 1017209,
+  "tiendas_sin_atributos": 0,
+  "duplicados_eliminados": 0,
+  "stateholiday_valores_originales": [
+    "0",
+    "a",
+    "b",
+    "c"
+  ],
+  "stateholiday_invalidos_corregidos": 0,
+  "nulos_tratados": {
+    "CompetitionDistance": 2642,
+    "CompetitionOpenSinceMonth": 323348,
+    "CompetitionOpenSinceYear": 323348,
+    "Promo2SinceWeek": 508031,
+    "Promo2SinceYear": 508031,
+    "PromoInterval": 508031
+  },
+  "mediana_competition_distance": 2325.0,
+  "registros_negativos_eliminados": 0,
+  "dias_cerrados_excluidos": 172817,
+  "dias_abiertos_con_venta_cero_excluidos": 54,
+  "outliers_iqr": {
+    "total": 16799,
+    "porcentaje": 1.99,
+    "en_diciembre": 7592,
+    "con_promo": 12965,
+    "decision": "Se conservan: corresponden mayoritariamente a diciembre y promociones (demanda real)."
+  },
+  "filas_finales_abiertas": 844338,
+  "tiendas": 1115,
+  "fecha_min": "2013-01-01",
+  "fecha_max": "2015-07-31",
+  "series": [
+    {
+      "id": "total",
+      "archivo": "serie_total.csv",
+      "dias": 942,
+      "interpolados": 0
+    },
+    {
+      "id": "tienda_770",
+      "archivo": "serie_tienda_770.csv",
+      "dias": 942,
+      "interpolados": 163
+    },
+    {
+      "id": "tienda_1097",
+      "archivo": "serie_tienda_1097.csv",
+      "dias": 942,
+      "interpolados": 0
+    },
+    {
+      "id": "tienda_1044",
+      "archivo": "serie_tienda_1044.csv",
+      "dias": 942,
+      "interpolados": 165
+    },
+    {
+      "id": "tienda_352",
+      "archivo": "serie_tienda_352.csv",
+      "dias": 942,
+      "interpolados": 158
+    },
+    {
+      "id": "tienda_262",
+      "archivo": "serie_tienda_262.csv",
+      "dias": 942,
+      "interpolados": 0
+    }
+  ]
+}

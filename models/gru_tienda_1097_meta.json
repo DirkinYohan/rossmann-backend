@@ -1,0 +1,18 @@
+{
+  "id": "tienda_1097",
+  "ventana": 30,
+  "features": [
+    "ventas_esc",
+    "promo",
+    "school_holiday",
+    "festivo_a",
+    "festivo_b",
+    "festivo_c",
+    "dow_sin",
+    "dow_cos",
+    "mes_sin",
+    "mes_cos"
+  ],
+  "escalador_min": 5460.0,
+  "escalador_max": 17039.0
+}
